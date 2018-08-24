@@ -365,6 +365,8 @@ int uv_dup(uv_os_fd_t fd, uv_os_fd_t* dupfd) {
 }
 #endif
 
+JL_DLLEXPORT int jl_pipe_open(uv_pipe_t *pipe, uv_os_fd_t fd, int readable, int writable);
+
 static void *init_stdio_handle(const char *stdio, uv_os_fd_t fd, int readable)
 {
     void *handle;
@@ -419,16 +421,9 @@ static void *init_stdio_handle(const char *stdio, uv_os_fd_t fd, int readable)
         if ((err = uv_pipe_init(jl_io_loop, (uv_pipe_t*)handle, 0))) {
             jl_errorf("error initializing %s in uv_pipe_init: %s (%s %d)", stdio, uv_strerror(err), uv_err_name(err), err);
         }
-        if ((err = uv_pipe_open((uv_pipe_t*)handle, fd))) {
+        if ((err = jl_pipe_open((uv_pipe_t*)handle, fd, readable, !readable))) {
             jl_errorf("error initializing %s in uv_pipe_open: %s (%s %d)", stdio, uv_strerror(err), uv_err_name(err), err);
         }
-#ifndef _OS_WINDOWS_
-        // remove flags set erroneously by libuv:
-        if (readable)
-            ((uv_pipe_t*)handle)->flags &= ~UV_STREAM_WRITABLE;
-        else
-            ((uv_pipe_t*)handle)->flags &= ~UV_STREAM_READABLE;
-#endif
         ((uv_pipe_t*)handle)->data = NULL;
         break;
     case UV_TCP:

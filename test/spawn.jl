@@ -57,16 +57,10 @@ out = read(`$echocmd hello` & `$echocmd world`, String)
 # Test for SIGPIPE being treated as normal termination (throws an error if broken)
 Sys.isunix() && run(pipeline(yescmd, `head`, devnull))
 
-let a, p
-    a = Base.Condition()
-    t = @async begin
-        p = run(pipeline(yescmd,devnull), wait=false)
-        Base.notify(a,p)
-        @test !success(p)
-    end
-    p = wait(a)
+let p = run(pipeline(yescmd, devnull), wait=false)
+    t = @async !success(p)
     kill(p)
-    wait(t)
+    @test fetch(t)
 end
 
 if valgrind_off

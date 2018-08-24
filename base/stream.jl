@@ -148,6 +148,18 @@ function PipeEndpoint()
     return pipe
 end
 
+function PipeEndpoint(fd::OS_HANDLE; readable::Bool = false)
+    pipe = PipeEndpoint()
+    err = ccall(:jl_pipe_open, Int32, (Ptr{Cvoid}, OS_HANDLE, Cint, Cint), pipe.handle, fd, readable, !readable)
+    uv_error("pipe_open", err)
+    pipe.status = StatusOpen
+    return pipe
+end
+if OS_HANDLE != RawFD
+    PipeEndpoint(fd::RawFD; readable::Bool = false) = PipeEndpoint(Libc._get_osfhandle(fd); readable=readable)
+end
+
+
 mutable struct TTY <: LibuvStream
     handle::Ptr{Cvoid}
     status::Int
@@ -177,15 +189,16 @@ mutable struct TTY <: LibuvStream
     end
 end
 
-function TTY(fd::RawFD; readable::Bool = false)
+function TTY(fd::OS_HANDLE; readable::Bool = false)
     tty = TTY(Libc.malloc(_sizeof_uv_tty), StatusUninit)
-    # This needs to go after associate_julia_struct so that there
-    # is no garbage in the ->data field
-    err = ccall(:uv_tty_init, Int32, (Ptr{Cvoid}, Ptr{Cvoid}, RawFD, Int32),
+    err = ccall(:uv_tty_init, Int32, (Ptr{Cvoid}, Ptr{Cvoid}, OS_HANDLE, Int32),
         eventloop(), tty.handle, fd, readable)
     uv_error("TTY", err)
     tty.status = StatusOpen
     return tty
+end
+if OS_HANDLE != RawFD
+    TTY(fd::RawFD; readable::Bool = false) = TTY(Libc._get_osfhandle(fd); readable=readable)
 end
 
 show(io::IO, stream::LibuvServer) = print(io, typeof(stream), "(",
@@ -236,11 +249,69 @@ function init_stdio(handle::Ptr{Cvoid})
         if !isassigned(Sockets_mod)
             Sockets_mod[] = Base.require(Base, :Sockets)
         end
-        return Sockets_mod[].TCPSocket(handle, StatusOpen)
+        return Sockets_mod[].TCPSocket(handle, StatusOpen) # TODO: `invokelatest`?
     elseif t == UV_NAMED_PIPE
         return PipeEndpoint(handle, StatusOpen)
     else
         throw(ArgumentError("invalid stdio type: $t"))
+    end
+end
+
+"""
+    open(fd::OS_HANDLE) -> IO
+
+Take a raw file descriptor wrap it in a Julia-aware IO type,
+and take ownership of the fd handle.
+Call `open(Libc.dup(fd))` to avoid the ownership capture
+of the original handle.
+
+WARNING: do not call this on a handle that's already owned by
+some other part of the system.
+"""
+function open(h::OS_HANDLE; readable::Bool)
+    t = ccall(:uv_guess_handle, Cint, (OS_HANDLE,), h)
+    if t == UV_FILE
+        @static if Sys.iswindows()
+            # TODO: Get ios.c to understand native handles
+            h = ccall(:_open_osfhandle, RawFD, (WindowsRawSocket, Int32), h, 0)
+        end
+        # TODO: Get fdio to work natively with file descriptors instead of integers
+        return fdio(cconvert(Cint, h))
+    elseif t == UV_TTY
+        return TTY(h, readable=readable)
+    elseif t == UV_TCP
+        if !isassigned(Sockets_mod)
+            Sockets_mod[] = Base.require(Base, :Sockets)
+        end
+        return Sockets_mod[].TCPSocket(h, readable=readable) # TODO: `invokelatest`?
+    elseif t == UV_NAMED_PIPE
+        pipe = PipeEndpoint(h, readable=readable)
+        @static if Sys.iswindows()
+            if ccall(:jl_ispty, Cint, (Ptr{Cvoid},), pipe.handle) != 0
+                # replace the Julia `PipeEndpoint` type with a `TTY` type,
+                # if we detect that this is a cygwin pty object
+                pipe_handle, pipe_status = pipe.handle, pipe.status
+                pipe.status = StatusClosed
+                pipe.handle = C_NULL
+                return TTY(pipe_handle, pipe_status)
+            end
+        end
+        return pipe
+    else
+        throw(ArgumentError("invalid stdio type: $t"))
+    end
+end
+if OS_HANDLE != RawFD
+    function open(fd::RawFD; readable::Bool)
+        h = Libc.dup(Libc._get_osfhandle(fd)) # make a dup to steal ownership away from msvcrt
+        try
+            io = open(h)
+            ccall(:_close, Cint, (RawFD,), fd) # on success, destroy the old libc handle
+            return io
+        catch ex
+            ccall(:CloseHandle, stdcall, Cint, (OS_HANDLE,), h) # on failure, destroy the new nt handle
+            rethrow(ex)
+        end
     end
 end
 
@@ -584,7 +655,7 @@ function open_pipe!(p::PipeEndpoint, handle::OS_HANDLE, readable::Bool, writable
         error("pipe is already in use or has been closed")
     end
     err = ccall(:jl_pipe_open, Int32, (Ptr{Cvoid}, OS_HANDLE, Cint, Cint), p.handle, handle, readable, writable)
-    uv_error("open_pipe", err)
+    uv_error("pipe_open", err)
     p.status = StatusOpen
     return p
 end
@@ -895,6 +966,7 @@ function uv_writecb_task(req::Ptr{Cvoid}, status::Cint)
 end
 
 _fd(x::IOStream) = RawFD(fd(x))
+_fd(x::Union{OS_HANDLE, RawFD}) = x
 
 function _fd(x::Union{LibuvStream, LibuvServer})
     fd = Ref{OS_HANDLE}(INVALID_OS_HANDLE)
