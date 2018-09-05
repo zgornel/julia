@@ -1692,3 +1692,11 @@ f28900(; kwarg) = kwarg
 let g = @foo28900 f28900(kwarg = x->2x)
     @test g(10) == 20
 end
+
+# issue #28506
+@test Meta.isexpr(Meta.parse("1,"), :incomplete)
+@test Meta.isexpr(Meta.parse("1, "), :incomplete)
+@test Meta.isexpr(Meta.parse("1,\n"), :incomplete)
+@test Meta.isexpr(Meta.parse("1, \n"), :incomplete)
+@test_throws LoadError include_string(@__MODULE__, "1,")
+@test_throws LoadError include_string(@__MODULE__, "1,\n")
