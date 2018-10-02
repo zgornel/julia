@@ -442,9 +442,9 @@ mul!(C::StridedMatrix{T}, A::StridedMatrix{T}, B::Hermitian{T,<:StridedMatrix}) 
 
 for T in (:Symmetric, :Hermitian), op in (:*, :/)
     # Deal with an ambiguous case
-    @eval ($op)(A::$T, x::Bool) = ($T)(($op)(A.data, x), sym_uplo(A.uplo))
+    @eval ($op)(A::$T, x::Bool) = broadcast($op, A, x)
     S = T == :Hermitian ? :Real : :Number
-    @eval ($op)(A::$T, x::$S) = ($T)(($op)(A.data, x), sym_uplo(A.uplo))
+    @eval ($op)(A::$T, x::$S) = broadcast($op, A, x)
 end
 
 function factorize(A::HermOrSym{T}) where T
