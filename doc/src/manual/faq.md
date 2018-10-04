@@ -41,6 +41,49 @@ obj3 = MyModule.someotherfunction(obj2, c)
 ...
 ```
 
+## [Scripting](@id man-scripting)
+
+### How do I check if the current file is being run as the main script?
+
+When a file is run as the main script using `julia file.jl` one might want to activate extra
+functionality like command line argument handling. A way to determine that a file is run in
+this fashion is to check if `abspath(PROGRAM_FILE) == @__FILE__` is `true`.
+
+### How do I catch CTRL-C in a script?
+
+Running a Julia script using `julia file.jl` does not throw
+[`InterruptException`](@ref) when you try to terminate it with CTRL-C
+(SIGINT).  To run a certain code before terminating a Julia script,
+which may or may not be caused by CTRL-C, use [`atexit`](@ref).
+Alternatively, you can use `julia -e 'include(popfirst!(ARGS))'
+file.jl` to execute a script while being able to catch
+`InterruptException` in the [`try`](@ref) block.
+
+### How do I pass options to `julia` using `#!/usr/bin/env`?
+
+Passing options to `julia` in so-called shebang by, e.g.,
+`#!/usr/bin/env julia --startup-file=no` may not work in some
+platforms such as Linux.  This is because argument parsing in shebang
+is platform-dependent and not well-specified.  In a Unix-like
+environment, a reliable way to pass options to `julia` in an
+executable script would be to start the script as a `bash` script and
+use `exec` to replace the process to `julia`:
+
+```julia
+#!/bin/bash
+#=
+exec julia --color=yes --startup-file=no -e 'include(popfirst!(ARGS))' \
+    "${BASH_SOURCE[0]}" "$@"
+=#
+
+@show ARGS  # put any Julia code here
+```
+
+In the example above, the code between `#=` and `=#` is run as a `bash`
+script.  Julia ignores this part since it is a multi-line comment for
+Julia.  The Julia code after `=#` is ignored by `bash` since it stops
+parsing the file once it reaches to the `exec` statement.
+
 ## Functions
 
 ### I passed an argument `x` to a function, modified it inside that function, but on the outside, the variable `x` is still unchanged. Why?
@@ -644,13 +687,6 @@ as nothing but rather a tuple of zero values.
 
 The empty (or "bottom") type, written as `Union{}` (an empty union type), is a type with
 no values and no subtypes (except itself). You will generally not need to use this type.
-
-
-### How do I check if the current file is being run as the main script?
-
-When a file is run as the main script using `julia file.jl` one might want to activate extra
-functionality like command line argument handling. A way to determine that a file is run in
-this fashion is to check if `abspath(PROGRAM_FILE) == @__FILE__` is `true`.
 
 ## Memory
 

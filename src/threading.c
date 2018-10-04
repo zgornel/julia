@@ -361,13 +361,11 @@ void ti_threadfun(void *arg)
 
     // initialize this thread (set tid, create heap, etc.)
     ti_initthread(ta->tid);
-    jl_init_stack_limits(0);
+    void *stack_lo, *stack_hi;
+    jl_init_stack_limits(0, &stack_lo, &stack_hi);
 
     // set up tasking
-    jl_init_root_task(ptls->stack_lo, ptls->stack_hi - ptls->stack_lo);
-#ifdef COPY_STACKS
-    jl_set_base_ctx((char*)&arg);
-#endif
+    jl_init_root_task(stack_lo, stack_hi);
 
     // set the thread-local tid and wait for a thread group
     while (jl_atomic_load_acquire(&ta->state) == TI_THREAD_INIT)
@@ -396,6 +394,7 @@ void ti_threadfun(void *arg)
 
         ti_threadgroup_fork(tg, ptls->tid, (void **)&work, init);
         init = 0;
+        JL_GC_PROMISE_ROOTED(work);
 
 #if PROFILE_JL_THREADING
         uint64_t tfork = uv_hrtime();
@@ -609,12 +608,15 @@ void jl_start_threads(void)
         mask[0] = 0;
     }
 
+    // The analyzer doesn't know jl_n_threads doesn't change, help it
+    size_t nthreads = jl_n_threads;
+
     // create threads
-    targs = (ti_threadarg_t **)malloc((jl_n_threads - 1) * sizeof (ti_threadarg_t *));
+    targs = (ti_threadarg_t **)malloc((nthreads - 1) * sizeof (ti_threadarg_t *));
 
-    uv_barrier_init(&thread_init_done, jl_n_threads);
+    uv_barrier_init(&thread_init_done, nthreads);
 
-    for (i = 0;  i < jl_n_threads - 1;  ++i) {
+    for (i = 0;  i < nthreads - 1;  ++i) {
         targs[i] = (ti_threadarg_t *)malloc(sizeof (ti_threadarg_t));
         targs[i]->state = TI_THREAD_INIT;
         targs[i]->tid = i + 1;
@@ -628,13 +630,13 @@ void jl_start_threads(void)
     }
 
     // set up the world thread group
-    ti_threadgroup_create(1, jl_n_threads, 1, &tgworld);
-    for (i = 0;  i < jl_n_threads;  ++i)
+    ti_threadgroup_create(1, nthreads, 1, &tgworld);
+    for (i = 0;  i < nthreads;  ++i)
         ti_threadgroup_addthread(tgworld, i, NULL);
     ti_threadgroup_initthread(tgworld, ptls->tid);
 
     // give the threads the world thread group; they will block waiting for fork
-    for (i = 0;  i < jl_n_threads - 1;  ++i) {
+    for (i = 0;  i < nthreads - 1;  ++i) {
         targs[i]->tg = tgworld;
         jl_atomic_store_release(&targs[i]->state, TI_THREAD_WORK);
     }
@@ -719,6 +721,7 @@ JL_DLLEXPORT jl_value_t *jl_threading_run(jl_value_t *_args)
 #endif
 
     // this thread must do work too (TODO: reduction?)
+    JL_GC_PROMISE_ROOTED(threadwork.mfunc);
     tw->ret = ti_run_fun(threadwork.fptr, threadwork.mfunc, args, nargs);
 
 #if PROFILE_JL_THREADING

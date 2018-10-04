@@ -254,6 +254,9 @@ locate_package(::Nothing) = nothing
 
 Return the path of `m.jl` file that was used to `import` module `m`,
 or `nothing` if `m` was not imported from a package.
+
+Use [`dirname`](@ref) to get the directory part and [`basename`](@ref)
+to get the file name part of the path.
 """
 function pathof(m::Module)
     pkgid = get(Base.module_keys, m, nothing)
@@ -612,6 +615,9 @@ end
 # and it reconnects the Base.Docs.META
 function _include_from_serialized(path::String, depmods::Vector{Any})
     sv = ccall(:jl_restore_incremental, Any, (Cstring, Any), path, depmods)
+    if isa(sv, Exception)
+        return sv
+    end
     restored = sv[1]
     if !isa(restored, Exception)
         for M in restored::Vector{Any}

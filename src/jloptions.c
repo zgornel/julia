@@ -78,6 +78,7 @@ static const char opts[]  =
     " -h, --help                Print this message\n\n"
 
     // startup options
+    " --project=<dir>/@.        Set <dir> as the home project/environment\n"
     " -J, --sysimage <file>     Start up with the given system image file\n"
     " -H, --home <dir>          Set location of `julia` executable\n"
     " --startup-file={yes|no}   Load `~/.julia/config/startup.jl`\n"
@@ -110,7 +111,7 @@ static const char opts[]  =
 
     // code generation options
     //" --compile={yes|no|all|min}Enable or disable JIT compiler, or request exhaustive compilation\n"
-    " -C, --cpu-target <target> Limit usage of cpu features up to <target>; set to \"help\" to see the available options\n"
+    " -C, --cpu-target <target> Limit usage of CPU features up to <target>; set to \"help\" to see the available options\n"
     " -O, --optimize={0,1,2,3}  Set the optimization level (default level is 2 if unspecified or 3 if used without a level)\n"
     " -g, -g <level>            Enable / Set the level of debug info generation"
 #ifdef JL_DEBUG_BUILD

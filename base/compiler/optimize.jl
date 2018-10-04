@@ -89,7 +89,7 @@ const _PURE_BUILTINS = Any[tuple, svec, ===, typeof, nfields]
 const _PURE_OR_ERROR_BUILTINS = [
     fieldtype, apply_type, isa, UnionAll,
     getfield, arrayref, isdefined, Core.sizeof,
-    Core.kwfunc
+    Core.kwfunc, ifelse, Core._typevar
 ]
 
 const TOP_TUPLE = GlobalRef(Core, :tuple)
@@ -145,9 +145,13 @@ end
 # These affect control flow within the function (so may not be removed
 # if there is no usage within the function), but don't affect the purity
 # of the function as a whole.
-function stmt_affects_purity(@nospecialize stmt)
-    if isa(stmt, GotoIfNot) || isa(stmt, GotoNode) || isa(stmt, ReturnNode)
+function stmt_affects_purity(@nospecialize(stmt), ir)
+    if isa(stmt, GotoNode) || isa(stmt, ReturnNode)
         return false
+    end
+    if isa(stmt, GotoIfNot)
+        t = argextype(stmt.cond, ir, ir.spvals)
+        return !(t ⊑ Bool)
     end
     if isa(stmt, Expr)
         return stmt.head != :simdloop && stmt.head != :enter
@@ -173,7 +177,7 @@ function optimize(opt::OptimizationState, @nospecialize(result))
             proven_pure = true
             for i in 1:length(ir.stmts)
                 stmt = ir.stmts[i]
-                if stmt_affects_purity(stmt) && !stmt_effect_free(stmt, ir.types[i], ir, ir.spvals)
+                if stmt_affects_purity(stmt, ir) && !stmt_effect_free(stmt, ir.types[i], ir, ir.spvals)
                     proven_pure = false
                     break
                 end
@@ -230,15 +234,19 @@ function optimize(opt::OptimizationState, @nospecialize(result))
     if force_noinline
         opt.src.inlineable = false
     elseif isa(def, Method)
-        bonus = 0
-        if result ⊑ Tuple && !isbitstype(widenconst(result))
-            bonus = opt.params.inline_tupleret_bonus
+        if opt.src.inlineable && isdispatchtuple(opt.linfo.specTypes)
+            # obey @inline declaration if a dispatch barrier would not help
+        else
+            bonus = 0
+            if result ⊑ Tuple && !isbitstype(widenconst(result))
+                bonus = opt.params.inline_tupleret_bonus
+            end
+            if opt.src.inlineable
+                # For functions declared @inline, increase the cost threshold 20x
+                bonus += opt.params.inline_cost_threshold*19
+            end
+            opt.src.inlineable = isinlineable(def, opt, bonus)
         end
-        if opt.src.inlineable
-            # For functions declared @inline, increase the cost threshold 20x
-            bonus += opt.params.inline_cost_threshold*19
-        end
-        opt.src.inlineable = isinlineable(def, opt, bonus)
     end
     nothing
 end
@@ -252,19 +260,6 @@ function is_pure_intrinsic_infer(f::IntrinsicFunction)
              f === Intrinsics.arraylen ||   # this one is volatile
              f === Intrinsics.sqrt_llvm ||  # this one may differ at runtime (by a few ulps)
              f === Intrinsics.cglobal)  # cglobal lookup answer changes at runtime
-end
-
-# whether `f` is pure for optimizations
-function is_pure_intrinsic_optim(f::IntrinsicFunction)
-    return !(f === Intrinsics.pointerref || # this one is volatile
-             f === Intrinsics.pointerset || # this one is never effect-free
-             f === Intrinsics.llvmcall ||   # this one is never effect-free
-             f === Intrinsics.arraylen ||   # this one is volatile
-             f === Intrinsics.checked_sdiv_int ||  # these may throw errors
-             f === Intrinsics.checked_udiv_int ||
-             f === Intrinsics.checked_srem_int ||
-             f === Intrinsics.checked_urem_int ||
-             f === Intrinsics.cglobal)  # cglobal throws an error for symbol-not-found
 end
 
 ## Computing the cost of a function body

@@ -162,23 +162,18 @@ makedocs(
     analytics = "UA-28835595-6",
     pages     = PAGES,
     html_prettyurls = ("deploy" in ARGS),
-    html_canonical = ("deploy" in ARGS) ? "https://docs.julialang.org/en/stable/" : nothing,
+    html_canonical = ("deploy" in ARGS) ? "https://docs.julialang.org/en/v1/" : nothing,
     assets = ["assets/julia-manual.css", ]
 )
 
 # Only deploy docs from 64bit Linux to avoid committing multiple versions of the same
 # docs from different workers.
 if "deploy" in ARGS && Sys.ARCH === :x86_64 && Sys.KERNEL === :Linux
-    # Since the `.travis.yml` config specifies `language: cpp` and not `language: julia` we
-    # need to manually set the version of Julia that we are deploying the docs from.
-    ENV["TRAVIS_JULIA_VERSION"] = "nightly"
-
     deploydocs(
-        julia = "nightly",
         repo = "github.com/JuliaLang/julia.git",
         target = "_build/html/en",
         dirname = "en",
-        deps = nothing,
-        make = nothing,
+        devurl = "v1.1-dev",
+        versions = ["v#.#", "v1.1-dev" => "v1.1-dev"]
     )
 end

@@ -968,7 +968,7 @@ function copyinds!(C::SparseMatrixCSC, A::SparseMatrixCSC)
 end
 
 # multiply by diagonal matrix as vector
-function mul!(C::SparseMatrixCSC, A::SparseMatrixCSC, D::Diagonal{<:Vector})
+function mul!(C::SparseMatrixCSC, A::SparseMatrixCSC, D::Diagonal{T, <:Vector}) where T
     m, n = size(A)
     b    = D.diag
     (n==length(b) && size(A)==size(C)) || throw(DimensionMismatch())
@@ -982,7 +982,7 @@ function mul!(C::SparseMatrixCSC, A::SparseMatrixCSC, D::Diagonal{<:Vector})
     C
 end
 
-function mul!(C::SparseMatrixCSC, D::Diagonal{<:Vector}, A::SparseMatrixCSC)
+function mul!(C::SparseMatrixCSC, D::Diagonal{T, <:Vector}, A::SparseMatrixCSC) where T
     m, n = size(A)
     b    = D.diag
     (m==length(b) && size(A)==size(C)) || throw(DimensionMismatch())
@@ -1017,8 +1017,30 @@ function rmul!(A::SparseMatrixCSC, b::Number)
     rmul!(A.nzval, b)
     return A
 end
+
 function lmul!(b::Number, A::SparseMatrixCSC)
     lmul!(b, A.nzval)
+    return A
+end
+
+function rmul!(A::SparseMatrixCSC, D::Diagonal)
+    m, n = size(A)
+    (n == size(D, 1)) || throw(DimensionMismatch())
+    Anzval = A.nzval
+    @inbounds for col = 1:n, p = A.colptr[col]:(A.colptr[col + 1] - 1)
+         Anzval[p] *= D.diag[col]
+    end
+    return A
+end
+
+function lmul!(D::Diagonal, A::SparseMatrixCSC)
+    m, n = size(A)
+    (m == size(D, 2)) || throw(DimensionMismatch())
+    Anzval = A.nzval
+    Arowval = A.rowval
+    @inbounds for col = 1:n, p = A.colptr[col]:(A.colptr[col + 1] - 1)
+        Anzval[p] *= D.diag[Arowval[p]]
+    end
     return A
 end
 

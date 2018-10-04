@@ -106,12 +106,15 @@ reshape(parent::AbstractArray, dims::Tuple{Vararg{Union{Int,Colon}}}) = _reshape
         "must be divisible by the product of the new dimensions $dims")))
     pre = _before_colon(dims...)
     post = _after_colon(dims...)
-    any(d -> d isa Colon, post) && throw1(dims)
+    _any_colon(post...) && throw1(dims)
     sz, remainder = divrem(length(A), prod(pre)*prod(post))
     remainder == 0 || throw2(A, dims)
     (pre..., Int(sz), post...)
 end
-@inline _before_colon(dim::Any, tail...) =  (dim, _before_colon(tail...)...)
+@inline _any_colon() = false
+@inline _any_colon(dim::Colon, tail...) = true
+@inline _any_colon(dim::Any, tail...) = _any_colon(tail...)
+@inline _before_colon(dim::Any, tail...) = (dim, _before_colon(tail...)...)
 @inline _before_colon(dim::Colon, tail...) = ()
 @inline _after_colon(dim::Any, tail...) =  _after_colon(tail...)
 @inline _after_colon(dim::Colon, tail...) = tail
@@ -222,7 +225,7 @@ end
     I = ind2sub_rs(axes(A.parent), A.mi, i)
     _unsafe_getindex_rs(parent(A), I)
 end
-_unsafe_getindex_rs(A, i::Integer) = (@inbounds ret = A[i]; ret)
+@inline _unsafe_getindex_rs(A, i::Integer) = (@inbounds ret = A[i]; ret)
 @inline _unsafe_getindex_rs(A, I) = (@inbounds ret = A[I...]; ret)
 
 @inline function setindex!(A::ReshapedArrayLF, val, index::Int)

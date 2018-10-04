@@ -340,6 +340,50 @@ add_tfunc(nfields, 1, 1,
         return Int
     end, 0)
 add_tfunc(Core._expr, 1, INT_INF, (@nospecialize args...)->Expr, 100)
+function typevar_tfunc(@nospecialize(n), @nospecialize(lb_arg), @nospecialize(ub_arg))
+    lb = Union{}
+    ub = Any
+    ub_certain = lb_certain = true
+    if isa(n, Const)
+        isa(n.val, Symbol) || return Union{}
+        if isa(lb_arg, Const)
+            lb = lb_arg.val
+        elseif isType(lb_arg)
+            lb = lb_arg.parameters[1]
+            lb_certain = false
+        else
+            return TypeVar
+        end
+        if isa(ub_arg, Const)
+            ub = ub_arg.val
+        elseif isType(ub_arg)
+            ub = ub_arg.parameters[1]
+            ub_certain = false
+        else
+            return TypeVar
+        end
+        tv = TypeVar(n.val, lb, ub)
+        return PartialTypeVar(tv, lb_certain, ub_certain)
+    end
+    return TypeVar
+end
+function typebound_nothrow(b)
+    b = widenconst(b)
+    (b ⊑ TypeVar) && return true
+    if isType(b)
+        b = unwrap_unionall(b.parameters[1])
+        b === Union{} && return true
+        return !isa(b, DataType) || b.name != _va_typename
+    end
+    return false
+end
+function typevar_nothrow(n, lb, ub)
+    (n ⊑ Symbol) || return false
+    typebound_nothrow(lb) || return false
+    typebound_nothrow(ub) || return false
+    return true
+end
+add_tfunc(Core._typevar, 3, 3, typevar_tfunc, 100)
 add_tfunc(applicable, 1, INT_INF, (@nospecialize(f), args...)->Bool, 100)
 add_tfunc(Core.Intrinsics.arraylen, 1, 1, @nospecialize(x)->Int, 4)
 add_tfunc(arraysize, 2, 2, (@nospecialize(a), @nospecialize(d))->Int, 4)
@@ -537,8 +581,10 @@ function getfield_nothrow(@nospecialize(s00), @nospecialize(name), @nospecialize
             sv = s00.val
         end
         if isa(name, Const)
-            (isa(sv, Module) && isa(name.val, Symbol)) || return false
-            (isa(name.val, Symbol) || isa(name.val, Int)) || return false
+            if !isa(name.val, Symbol)
+                isa(sv, Module) && return false
+                isa(name.val, Int) || return false
+            end
             return isdefined(sv, name.val)
         end
         if bounds_check_disabled && !isa(sv, Module)
@@ -818,7 +864,31 @@ function apply_type_nothrow(argtypes::Array{Any, 1}, @nospecialize(rt))
     # We know the apply_type is well formed. Oherwise our rt would have been
     # Bottom (or Type).
     (headtype === Union) && return true
-    return isa(rt, Const)
+    isa(rt, Const) && return true
+    u = headtype
+    for i = 2:length(argtypes)
+        isa(u, UnionAll) || return false
+        ai = maybe_widen_conditional(argtypes[i])
+        if ai === TypeVar
+            # We don't know anything about the bounds of this typevar, but as
+            # long as the UnionAll is not constrained, that's ok.
+            if !(u.var.lb === Union{} && u.var.ub === Any)
+                return false
+            end
+        elseif isa(ai, Const) && isa(ai.val, Type)
+            ai = ai.val
+            if has_free_typevars(u.var.lb) || has_free_typevars(u.var.ub)
+                return false
+            end
+            if !(u.var.lb <: ai <: u.var.ub)
+                return false
+            end
+        else
+            return false
+        end
+        u = u.body
+    end
+    return true
 end
 
 # TODO: handle e.g. apply_type(T, R::Union{Type{Int32},Type{Float64}})
@@ -1035,6 +1105,9 @@ function _builtin_nothrow(@nospecialize(f), argtypes::Array{Any,1}, @nospecializ
     elseif f === Core._expr
         length(argtypes) >= 1 || return false
         return argtypes[1] ⊑ Symbol
+    elseif f === Core._typevar
+        length(argtypes) == 3 || return false
+        return typevar_nothrow(argtypes[1], argtypes[2], argtypes[3])
     elseif f === invoke
         return false
     elseif f === getfield
@@ -1056,8 +1129,11 @@ function _builtin_nothrow(@nospecialize(f), argtypes::Array{Any,1}, @nospecializ
         length(argtypes) == 1 || return false
         return sizeof_nothrow(argtypes[1])
     elseif f === Core.kwfunc
-        length(argtypes) == 2 || return false
+        length(argtypes) == 1 || return false
         return isa(rt, Const)
+    elseif f === Core.ifelse
+        length(argtypes) == 3 || return false
+        return argtypes[1] ⊑ Bool
     end
     return false
 end
@@ -1162,6 +1238,32 @@ function builtin_tfunction(@nospecialize(f), argtypes::Array{Any,1},
         return Bottom
     end
     return tf[3](argtypes...)
+end
+
+# Query whether the given intrinsic is nothrow
+intrinsic_nothrow(f::IntrinsicFunction) = !(
+        f === Intrinsics.checked_sdiv_int ||
+        f === Intrinsics.checked_udiv_int ||
+        f === Intrinsics.checked_srem_int ||
+        f === Intrinsics.checked_urem_int ||
+        f === Intrinsics.cglobal
+    )
+
+function intrinsic_nothrow(f::IntrinsicFunction, argtypes::Array{Any, 1})
+    # TODO: We could do better for cglobal
+    f === Intrinsics.cglobal && return false
+    if f === Intrinsics.checked_udiv_int || f === Intrinsics.checked_urem_int || f === Intrinsics.checked_srem_int || f === Intrinsics.checked_sdiv_int
+        # Nothrow as long as the second argument is guaranteed not to be zero
+        isa(argtypes[2], Const) || return false
+        den_val = argtypes[2].val
+        den_val !== zero(typeof(den_val)) || return false
+    end
+    if f === Intrinsics.checked_sdiv_int
+        # Nothrow as long as we additionally don't do typemin(T)/-1
+        return den_val !== -1 || (isa(argtypes[1], Const) &&
+            argtypes[1].val !== typemin(typeof(den_val)))
+    end
+    return true
 end
 
 # TODO: this function is a very buggy and poor model of the return_type function
